@@ -5,7 +5,9 @@ import (
 	"errors"
 	"strings"
 
-	C "github.com/Dreamacro/clash/constant"
+	"github.com/metacubex/mihomo/common/utils"
+	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/constant/sniffer"
 )
 
 var (
@@ -13,7 +15,20 @@ var (
 	errNotClientHello = errors.New("not client hello")
 )
 
+var _ sniffer.Sniffer = (*TLSSniffer)(nil)
+
 type TLSSniffer struct {
+	*BaseSniffer
+}
+
+func NewTLSSniffer(snifferConfig SnifferConfig) (*TLSSniffer, error) {
+	ports := snifferConfig.Ports
+	if len(ports) == 0 {
+		ports = utils.IntRanges[uint16]{utils.NewRange[uint16](443, 443)}
+	}
+	return &TLSSniffer{
+		BaseSniffer: NewBaseSniffer(ports, C.TCP),
+	}, nil
 }
 
 func (tls *TLSSniffer) Protocol() string {
@@ -24,7 +39,7 @@ func (tls *TLSSniffer) SupportNetwork() C.NetWork {
 	return C.TCP
 }
 
-func (tls *TLSSniffer) SniffTCP(bytes []byte) (string, error) {
+func (tls *TLSSniffer) SniffData(bytes []byte) (string, error) {
 	domain, err := SniffTLS(bytes)
 	if err == nil {
 		return *domain, nil

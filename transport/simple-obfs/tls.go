@@ -2,18 +2,14 @@ package obfs
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/binary"
 	"io"
-	"math/rand"
 	"net"
 	"time"
 
-	"github.com/Dreamacro/clash/common/pool"
+	"github.com/metacubex/mihomo/common/pool"
 )
-
-func init() {
-	rand.Seed(time.Now().Unix())
-}
 
 const (
 	chunkSize = 1 << 14 // 2 ** 14 == 16 * 1024
@@ -31,10 +27,10 @@ type TLSObfs struct {
 func (to *TLSObfs) read(b []byte, discardN int) (int, error) {
 	buf := pool.Get(discardN)
 	_, err := io.ReadFull(to.Conn, buf)
+	pool.Put(buf)
 	if err != nil {
 		return 0, err
 	}
-	pool.Put(buf)
 
 	sizeBuf := make([]byte, 2)
 	_, err = io.ReadFull(to.Conn, sizeBuf)
@@ -109,7 +105,12 @@ func (to *TLSObfs) write(b []byte) (int, error) {
 	binary.Write(buf, binary.BigEndian, uint16(len(b)))
 	buf.Write(b)
 	_, err := to.Conn.Write(buf.Bytes())
-	return len(b), err
+	if err != nil {
+		// return 0 because errors occur here make the
+		// whole situation irrecoverable
+		return 0, err
+	}
+	return len(b), nil
 }
 
 // NewTLSObfs return a SimpleObfs

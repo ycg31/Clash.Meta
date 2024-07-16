@@ -3,11 +3,12 @@ package fakeip
 import (
 	"errors"
 	"net/netip"
+	"strings"
 	"sync"
 
-	"github.com/Dreamacro/clash/common/nnip"
-	"github.com/Dreamacro/clash/component/profile/cachefile"
-	"github.com/Dreamacro/clash/component/trie"
+	"github.com/metacubex/mihomo/common/nnip"
+	"github.com/metacubex/mihomo/component/profile/cachefile"
+	"github.com/metacubex/mihomo/component/trie"
 )
 
 const (
@@ -26,7 +27,7 @@ type store interface {
 	FlushFakeIP() error
 }
 
-// Pool is a implementation about fake ip generator without storage
+// Pool is an implementation about fake ip generator without storage
 type Pool struct {
 	gateway netip.Addr
 	first   netip.Addr
@@ -34,8 +35,8 @@ type Pool struct {
 	offset  netip.Addr
 	cycle   bool
 	mux     sync.Mutex
-	host    *trie.DomainTrie[bool]
-	ipnet   *netip.Prefix
+	host    *trie.DomainTrie[struct{}]
+	ipnet   netip.Prefix
 	store   store
 }
 
@@ -43,6 +44,9 @@ type Pool struct {
 func (p *Pool) Lookup(host string) netip.Addr {
 	p.mux.Lock()
 	defer p.mux.Unlock()
+
+	// RFC4343: DNS Case Insensitive, we SHOULD return result with all cases.
+	host = strings.ToLower(host)
 	if ip, exist := p.store.GetByHost(host); exist {
 		return ip
 	}
@@ -87,7 +91,7 @@ func (p *Pool) Broadcast() netip.Addr {
 }
 
 // IPNet return raw ipnet
-func (p *Pool) IPNet() *netip.Prefix {
+func (p *Pool) IPNet() netip.Prefix {
 	return p.ipnet
 }
 
@@ -149,8 +153,8 @@ func (p *Pool) restoreState() {
 }
 
 type Options struct {
-	IPNet *netip.Prefix
-	Host  *trie.DomainTrie[bool]
+	IPNet netip.Prefix
+	Host  *trie.DomainTrie[struct{}]
 
 	// Size sets the maximum number of entries in memory
 	// and does not work if Persistence is true
@@ -167,7 +171,7 @@ func New(options Options) (*Pool, error) {
 		hostAddr = options.IPNet.Masked().Addr()
 		gateway  = hostAddr.Next()
 		first    = gateway.Next().Next().Next() // default start with 198.18.0.4
-		last     = nnip.UnMasked(*options.IPNet)
+		last     = nnip.UnMasked(options.IPNet)
 	)
 
 	if !options.IPNet.IsValid() || !first.IsValid() || !first.Less(last) {

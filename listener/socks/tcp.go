@@ -1,17 +1,15 @@
 package socks
 
 import (
-	"context"
-	"github.com/database64128/tfo-go"
 	"io"
 	"net"
 
-	"github.com/Dreamacro/clash/adapter/inbound"
-	N "github.com/Dreamacro/clash/common/net"
-	C "github.com/Dreamacro/clash/constant"
-	authStore "github.com/Dreamacro/clash/listener/auth"
-	"github.com/Dreamacro/clash/transport/socks4"
-	"github.com/Dreamacro/clash/transport/socks5"
+	"github.com/metacubex/mihomo/adapter/inbound"
+	N "github.com/metacubex/mihomo/common/net"
+	C "github.com/metacubex/mihomo/constant"
+	authStore "github.com/metacubex/mihomo/listener/auth"
+	"github.com/metacubex/mihomo/transport/socks4"
+	"github.com/metacubex/mihomo/transport/socks5"
 )
 
 type Listener struct {
@@ -36,11 +34,16 @@ func (l *Listener) Close() error {
 	return l.listener.Close()
 }
 
-func New(addr string, inboundTfo bool, in chan<- C.ConnContext) (*Listener, error) {
-	lc := tfo.ListenConfig{
-		DisableTFO: !inboundTfo,
+func New(addr string, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error) {
+	isDefault := false
+	if len(additions) == 0 {
+		isDefault = true
+		additions = []inbound.Addition{
+			inbound.WithInName("DEFAULT-SOCKS"),
+			inbound.WithSpecialRules(""),
+		}
 	}
-	l, err := lc.Listen(context.Background(), "tcp", addr)
+	l, err := inbound.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
@@ -58,15 +61,21 @@ func New(addr string, inboundTfo bool, in chan<- C.ConnContext) (*Listener, erro
 				}
 				continue
 			}
-			go handleSocks(c, in)
+			if isDefault { // only apply on default listener
+				if !inbound.IsRemoteAddrDisAllowed(c.RemoteAddr()) {
+					_ = c.Close()
+					continue
+				}
+			}
+			go handleSocks(c, tunnel, additions...)
 		}
 	}()
 
 	return sl, nil
 }
 
-func handleSocks(conn net.Conn, in chan<- C.ConnContext) {
-	conn.(*net.TCPConn).SetKeepAlive(true)
+func handleSocks(conn net.Conn, tunnel C.Tunnel, additions ...inbound.Addition) {
+	N.TCPKeepAlive(conn)
 	bufConn := N.NewBufferedConn(conn)
 	head, err := bufConn.Peek(1)
 	if err != nil {
@@ -76,25 +85,34 @@ func handleSocks(conn net.Conn, in chan<- C.ConnContext) {
 
 	switch head[0] {
 	case socks4.Version:
-		HandleSocks4(bufConn, in)
+		HandleSocks4(bufConn, tunnel, additions...)
 	case socks5.Version:
-		HandleSocks5(bufConn, in)
+		HandleSocks5(bufConn, tunnel, additions...)
 	default:
 		conn.Close()
 	}
 }
 
-func HandleSocks4(conn net.Conn, in chan<- C.ConnContext) {
-	addr, _, err := socks4.ServerHandshake(conn, authStore.Authenticator())
+func HandleSocks4(conn net.Conn, tunnel C.Tunnel, additions ...inbound.Addition) {
+	authenticator := authStore.Authenticator()
+	if inbound.SkipAuthRemoteAddr(conn.RemoteAddr()) {
+		authenticator = nil
+	}
+	addr, _, user, err := socks4.ServerHandshake(conn, authenticator)
 	if err != nil {
 		conn.Close()
 		return
 	}
-	in <- inbound.NewSocket(socks5.ParseAddr(addr), conn, C.SOCKS4)
+	additions = append(additions, inbound.WithInUser(user))
+	tunnel.HandleTCPConn(inbound.NewSocket(socks5.ParseAddr(addr), conn, C.SOCKS4, additions...))
 }
 
-func HandleSocks5(conn net.Conn, in chan<- C.ConnContext) {
-	target, command, err := socks5.ServerHandshake(conn, authStore.Authenticator())
+func HandleSocks5(conn net.Conn, tunnel C.Tunnel, additions ...inbound.Addition) {
+	authenticator := authStore.Authenticator()
+	if inbound.SkipAuthRemoteAddr(conn.RemoteAddr()) {
+		authenticator = nil
+	}
+	target, command, user, err := socks5.ServerHandshake(conn, authenticator)
 	if err != nil {
 		conn.Close()
 		return
@@ -104,5 +122,6 @@ func HandleSocks5(conn net.Conn, in chan<- C.ConnContext) {
 		io.Copy(io.Discard, conn)
 		return
 	}
-	in <- inbound.NewSocket(target, conn, C.SOCKS5)
+	additions = append(additions, inbound.WithInUser(user))
+	tunnel.HandleTCPConn(inbound.NewSocket(target, conn, C.SOCKS5, additions...))
 }

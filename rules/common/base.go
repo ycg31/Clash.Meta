@@ -6,7 +6,6 @@ import (
 
 var (
 	errPayload = errors.New("payloadRule error")
-	initFlag   bool
 	noResolve  = "no-resolve"
 )
 
@@ -20,6 +19,8 @@ func (b *Base) ShouldFindProcess() bool {
 func (b *Base) ShouldResolveIP() bool {
 	return false
 }
+
+func (b *Base) ProviderNames() []string { return nil }
 
 func HasNoResolve(params []string) bool {
 	for _, p := range params {

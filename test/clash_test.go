@@ -16,13 +16,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Dreamacro/clash/adapter/outbound"
-	C "github.com/Dreamacro/clash/constant"
-	"github.com/Dreamacro/clash/hub/executor"
-	"github.com/Dreamacro/clash/transport/socks5"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
+	"github.com/metacubex/mihomo/adapter/outbound"
+	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/hub/executor"
+	"github.com/metacubex/mihomo/transport/socks5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -30,7 +30,7 @@ import (
 const (
 	ImageShadowsocks     = "mritd/shadowsocks:latest"
 	ImageShadowsocksRust = "ghcr.io/shadowsocks/ssserver-rust:latest"
-	ImageVmess           = "v2fly/v2fly-core:latest"
+	ImageVmess           = "v2fly/v2fly-core:v4.45.2"
 	ImageVmessLatest     = "sagernet/v2fly-core:latest"
 	ImageVless           = "teddysun/xray:latest"
 	ImageTrojan          = "trojangfw/trojan:latest"
@@ -555,9 +555,8 @@ func testPacketConnTimeout(t *testing.T, pc net.PacketConn) error {
 func testSuit(t *testing.T, proxy C.ProxyAdapter) {
 	assert.NoError(t, testPingPongWithConn(t, func() net.Conn {
 		conn, err := proxy.DialContext(context.Background(), &C.Metadata{
-			Host:     localIP.String(),
-			DstPort:  "10001",
-			AddrType: socks5.AtypDomainName,
+			Host:    localIP.String(),
+			DstPort: 10001,
 		})
 		require.NoError(t, err)
 		return conn
@@ -565,9 +564,8 @@ func testSuit(t *testing.T, proxy C.ProxyAdapter) {
 
 	assert.NoError(t, testLargeDataWithConn(t, func() net.Conn {
 		conn, err := proxy.DialContext(context.Background(), &C.Metadata{
-			Host:     localIP.String(),
-			DstPort:  "10001",
-			AddrType: socks5.AtypDomainName,
+			Host:    localIP.String(),
+			DstPort: 10001,
 		})
 		require.NoError(t, err)
 		return conn
@@ -578,10 +576,9 @@ func testSuit(t *testing.T, proxy C.ProxyAdapter) {
 	}
 
 	pc, err := proxy.ListenPacketContext(context.Background(), &C.Metadata{
-		NetWork:  C.UDP,
-		DstIP:    localIP,
-		DstPort:  "10001",
-		AddrType: socks5.AtypIPv4,
+		NetWork: C.UDP,
+		DstIP:   localIP,
+		DstPort: 10001,
 	})
 	require.NoError(t, err)
 	defer pc.Close()
@@ -589,10 +586,9 @@ func testSuit(t *testing.T, proxy C.ProxyAdapter) {
 	assert.NoError(t, testPingPongWithPacketConn(t, pc))
 
 	pc, err = proxy.ListenPacketContext(context.Background(), &C.Metadata{
-		NetWork:  C.UDP,
-		DstIP:    localIP,
-		DstPort:  "10001",
-		AddrType: socks5.AtypIPv4,
+		NetWork: C.UDP,
+		DstIP:   localIP,
+		DstPort: 10001,
 	})
 	require.NoError(t, err)
 	defer pc.Close()
@@ -600,10 +596,9 @@ func testSuit(t *testing.T, proxy C.ProxyAdapter) {
 	assert.NoError(t, testLargeDataWithPacketConn(t, pc))
 
 	pc, err = proxy.ListenPacketContext(context.Background(), &C.Metadata{
-		NetWork:  C.UDP,
-		DstIP:    localIP,
-		DstPort:  "10001",
-		AddrType: socks5.AtypIPv4,
+		NetWork: C.UDP,
+		DstIP:   localIP,
+		DstPort: 10001,
 	})
 	require.NoError(t, err)
 	defer pc.Close()
@@ -639,9 +634,8 @@ func benchmarkProxy(b *testing.B, proxy C.ProxyAdapter) {
 	}()
 
 	conn, err := proxy.DialContext(context.Background(), &C.Metadata{
-		Host:     localIP.String(),
-		DstPort:  "10001",
-		AddrType: socks5.AtypDomainName,
+		Host:    localIP.String(),
+		DstPort: 10001,
 	})
 	require.NoError(b, err)
 
@@ -664,7 +658,7 @@ func benchmarkProxy(b *testing.B, proxy C.ProxyAdapter) {
 	})
 }
 
-func TestClash_Basic(t *testing.T) {
+func TestMihomo_Basic(t *testing.T) {
 	basic := `
 mixed-port: 10000
 log-level: silent

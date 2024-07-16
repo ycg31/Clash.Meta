@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Dreamacro/clash/component/profile/cachefile"
-	"github.com/Dreamacro/clash/component/trie"
+	"github.com/metacubex/mihomo/component/profile/cachefile"
+	"github.com/metacubex/mihomo/component/trie"
 
+	"github.com/sagernet/bbolt"
 	"github.com/stretchr/testify/assert"
-	"go.etcd.io/bbolt"
 )
 
 func createPools(options Options) ([]*Pool, string, error) {
@@ -32,7 +32,7 @@ func createCachefileStore(options Options) (*Pool, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	f, err := os.CreateTemp("", "clash")
+	f, err := os.CreateTemp("", "mihomo")
 	if err != nil {
 		return nil, "", err
 	}
@@ -51,7 +51,7 @@ func createCachefileStore(options Options) (*Pool, string, error) {
 func TestPool_Basic(t *testing.T) {
 	ipnet := netip.MustParsePrefix("192.168.0.0/28")
 	pools, tempfile, err := createPools(Options{
-		IPNet: &ipnet,
+		IPNet: ipnet,
 		Size:  10,
 	})
 	assert.Nil(t, err)
@@ -79,7 +79,7 @@ func TestPool_Basic(t *testing.T) {
 func TestPool_BasicV6(t *testing.T) {
 	ipnet := netip.MustParsePrefix("2001:4860:4860::8888/118")
 	pools, tempfile, err := createPools(Options{
-		IPNet: &ipnet,
+		IPNet: ipnet,
 		Size:  10,
 	})
 	assert.Nil(t, err)
@@ -104,10 +104,31 @@ func TestPool_BasicV6(t *testing.T) {
 	}
 }
 
+func TestPool_Case_Insensitive(t *testing.T) {
+	ipnet := netip.MustParsePrefix("192.168.0.1/29")
+	pools, tempfile, err := createPools(Options{
+		IPNet: ipnet,
+		Size:  10,
+	})
+	assert.Nil(t, err)
+	defer os.Remove(tempfile)
+
+	for _, pool := range pools {
+		first := pool.Lookup("foo.com")
+		last := pool.Lookup("Foo.Com")
+		foo, exist := pool.LookBack(last)
+
+		assert.Equal(t, first, pool.Lookup("Foo.Com"))
+		assert.Equal(t, pool.Lookup("fOo.cOM"), first)
+		assert.True(t, exist)
+		assert.Equal(t, foo, "foo.com")
+	}
+}
+
 func TestPool_CycleUsed(t *testing.T) {
 	ipnet := netip.MustParsePrefix("192.168.0.16/28")
 	pools, tempfile, err := createPools(Options{
-		IPNet: &ipnet,
+		IPNet: ipnet,
 		Size:  10,
 	})
 	assert.Nil(t, err)
@@ -128,10 +149,10 @@ func TestPool_CycleUsed(t *testing.T) {
 
 func TestPool_Skip(t *testing.T) {
 	ipnet := netip.MustParsePrefix("192.168.0.1/29")
-	tree := trie.New[bool]()
-	tree.Insert("example.com", true)
+	tree := trie.New[struct{}]()
+	tree.Insert("example.com", struct{}{})
 	pools, tempfile, err := createPools(Options{
-		IPNet: &ipnet,
+		IPNet: ipnet,
 		Size:  10,
 		Host:  tree,
 	})
@@ -147,7 +168,7 @@ func TestPool_Skip(t *testing.T) {
 func TestPool_MaxCacheSize(t *testing.T) {
 	ipnet := netip.MustParsePrefix("192.168.0.1/24")
 	pool, _ := New(Options{
-		IPNet: &ipnet,
+		IPNet: ipnet,
 		Size:  2,
 	})
 
@@ -162,7 +183,7 @@ func TestPool_MaxCacheSize(t *testing.T) {
 func TestPool_DoubleMapping(t *testing.T) {
 	ipnet := netip.MustParsePrefix("192.168.0.1/24")
 	pool, _ := New(Options{
-		IPNet: &ipnet,
+		IPNet: ipnet,
 		Size:  2,
 	})
 
@@ -192,7 +213,7 @@ func TestPool_DoubleMapping(t *testing.T) {
 func TestPool_Clone(t *testing.T) {
 	ipnet := netip.MustParsePrefix("192.168.0.1/24")
 	pool, _ := New(Options{
-		IPNet: &ipnet,
+		IPNet: ipnet,
 		Size:  2,
 	})
 
@@ -202,7 +223,7 @@ func TestPool_Clone(t *testing.T) {
 	assert.True(t, last == netip.AddrFrom4([4]byte{192, 168, 0, 5}))
 
 	newPool, _ := New(Options{
-		IPNet: &ipnet,
+		IPNet: ipnet,
 		Size:  2,
 	})
 	newPool.CloneFrom(pool)
@@ -215,7 +236,7 @@ func TestPool_Clone(t *testing.T) {
 func TestPool_Error(t *testing.T) {
 	ipnet := netip.MustParsePrefix("192.168.0.1/31")
 	_, err := New(Options{
-		IPNet: &ipnet,
+		IPNet: ipnet,
 		Size:  10,
 	})
 
@@ -225,7 +246,7 @@ func TestPool_Error(t *testing.T) {
 func TestPool_FlushFileCache(t *testing.T) {
 	ipnet := netip.MustParsePrefix("192.168.0.1/28")
 	pools, tempfile, err := createPools(Options{
-		IPNet: &ipnet,
+		IPNet: ipnet,
 		Size:  10,
 	})
 	assert.Nil(t, err)
@@ -257,7 +278,7 @@ func TestPool_FlushFileCache(t *testing.T) {
 func TestPool_FlushMemoryCache(t *testing.T) {
 	ipnet := netip.MustParsePrefix("192.168.0.1/28")
 	pool, _ := New(Options{
-		IPNet: &ipnet,
+		IPNet: ipnet,
 		Size:  10,
 	})
 

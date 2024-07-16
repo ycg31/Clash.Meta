@@ -2,30 +2,24 @@ package sing_tun
 
 import (
 	"context"
-	"encoding/binary"
-	"io"
 	"net"
 	"net/netip"
 	"sync"
 	"time"
 
-	"github.com/Dreamacro/clash/common/pool"
-	"github.com/Dreamacro/clash/component/resolver"
-	"github.com/Dreamacro/clash/listener/sing"
-	"github.com/Dreamacro/clash/log"
-
-	D "github.com/miekg/dns"
+	"github.com/metacubex/mihomo/component/resolver"
+	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/listener/sing"
+	"github.com/metacubex/mihomo/log"
 
 	"github.com/sagernet/sing/common/buf"
-	E "github.com/sagernet/sing/common/exceptions"
+	"github.com/sagernet/sing/common/bufio"
 	M "github.com/sagernet/sing/common/metadata"
 	"github.com/sagernet/sing/common/network"
 )
 
-const DefaultDnsReadTimeout = time.Second * 10
-
 type ListenerHandler struct {
-	sing.ListenerHandler
+	*sing.ListenerHandler
 	DnsAdds []netip.AddrPort
 }
 
@@ -44,53 +38,7 @@ func (h *ListenerHandler) ShouldHijackDns(targetAddr netip.AddrPort) bool {
 func (h *ListenerHandler) NewConnection(ctx context.Context, conn net.Conn, metadata M.Metadata) error {
 	if h.ShouldHijackDns(metadata.Destination.AddrPort()) {
 		log.Debugln("[DNS] hijack tcp:%s", metadata.Destination.String())
-		buff := pool.Get(pool.UDPBufferSize)
-		defer func() {
-			_ = pool.Put(buff)
-			_ = conn.Close()
-		}()
-		for {
-			if conn.SetReadDeadline(time.Now().Add(DefaultDnsReadTimeout)) != nil {
-				break
-			}
-
-			length := uint16(0)
-			if err := binary.Read(conn, binary.BigEndian, &length); err != nil {
-				break
-			}
-
-			if int(length) > len(buff) {
-				break
-			}
-
-			n, err := io.ReadFull(conn, buff[:length])
-			if err != nil {
-				break
-			}
-
-			err = func() error {
-				inData := buff[:n]
-				msg, err := RelayDnsPacket(inData)
-				if err != nil {
-					return err
-				}
-
-				err = binary.Write(conn, binary.BigEndian, uint16(len(msg)))
-				if err != nil {
-					return err
-				}
-
-				_, err = conn.Write(msg)
-				if err != nil {
-					return err
-				}
-				return nil
-			}()
-			if err != nil {
-				return err
-			}
-		}
-		return nil
+		return resolver.RelayDnsConn(ctx, conn, resolver.DefaultDnsReadTimeout)
 	}
 	return h.ListenerHandler.NewConnection(ctx, conn, metadata)
 }
@@ -106,37 +54,69 @@ func (h *ListenerHandler) NewPacketConnection(ctx context.Context, conn network.
 			defer mutex.Unlock()
 			conn2 = nil
 		}()
+		rwOptions := network.ReadWaitOptions{
+			FrontHeadroom: network.CalculateFrontHeadroom(conn),
+			RearHeadroom:  network.CalculateRearHeadroom(conn),
+			MTU:           resolver.SafeDnsPacketSize,
+		}
+		readWaiter, isReadWaiter := bufio.CreatePacketReadWaiter(conn)
+		if isReadWaiter {
+			readWaiter.InitializeReadWaiter(rwOptions)
+		}
 		for {
-			buff := buf.NewPacket()
-			dest, err := conn.ReadPacket(buff)
+			var (
+				readBuff *buf.Buffer
+				dest     M.Socksaddr
+				err      error
+			)
+			_ = conn.SetReadDeadline(time.Now().Add(resolver.DefaultDnsReadTimeout))
+			readBuff = nil // clear last loop status, avoid repeat release
+			if isReadWaiter {
+				readBuff, dest, err = readWaiter.WaitReadPacket()
+			} else {
+				readBuff = rwOptions.NewPacketBuffer()
+				dest, err = conn.ReadPacket(readBuff)
+				if readBuff != nil {
+					rwOptions.PostReturn(readBuff)
+				}
+			}
 			if err != nil {
-				buff.Release()
-				if E.IsClosed(err) {
+				if readBuff != nil {
+					readBuff.Release()
+				}
+				if sing.ShouldIgnorePacketError(err) {
 					break
 				}
 				return err
 			}
 			go func() {
-				inData := buff.Bytes()
-				msg, err := RelayDnsPacket(inData)
+				ctx, cancel := context.WithTimeout(ctx, resolver.DefaultDnsRelayTimeout)
+				defer cancel()
+				inData := readBuff.Bytes()
+				writeBuff := readBuff
+				writeBuff.Resize(writeBuff.Start(), 0)
+				if len(writeBuff.FreeBytes()) < resolver.SafeDnsPacketSize { // only create a new buffer when space don't enough
+					writeBuff = rwOptions.NewPacketBuffer()
+				}
+				msg, err := resolver.RelayDnsPacket(ctx, inData, writeBuff.FreeBytes())
+				if writeBuff != readBuff {
+					readBuff.Release()
+				}
 				if err != nil {
-					buff.Release()
+					writeBuff.Release()
 					return
 				}
-				buff.Reset()
-				_, err = buff.Write(msg)
-				if err != nil {
-					buff.Release()
-					return
-				}
+				writeBuff.Truncate(len(msg))
 				mutex.Lock()
 				defer mutex.Unlock()
 				conn := conn2
 				if conn == nil {
+					writeBuff.Release()
 					return
 				}
-				err = conn.WritePacket(buff, dest) // WritePacket will release buff
+				err = conn.WritePacket(writeBuff, dest) // WritePacket will release writeBuff
 				if err != nil {
+					writeBuff.Release()
 					return
 				}
 			}()
@@ -146,20 +126,8 @@ func (h *ListenerHandler) NewPacketConnection(ctx context.Context, conn network.
 	return h.ListenerHandler.NewPacketConnection(ctx, conn, metadata)
 }
 
-func RelayDnsPacket(payload []byte) ([]byte, error) {
-	msg := &D.Msg{}
-	if err := msg.Unpack(payload); err != nil {
-		return nil, err
-	}
-
-	r, err := resolver.ServeMsg(msg)
-	if err != nil {
-		m := new(D.Msg)
-		m.SetRcode(msg, D.RcodeServerFailure)
-		return m.Pack()
-	}
-
-	r.SetRcode(msg, r.Rcode)
-	r.Compress = true
-	return r.Pack()
+func (h *ListenerHandler) TypeMutation(typ C.Type) *ListenerHandler {
+	handle := *h
+	handle.ListenerHandler = h.ListenerHandler.TypeMutation(typ)
+	return &handle
 }

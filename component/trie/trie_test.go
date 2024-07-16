@@ -3,8 +3,9 @@ package trie
 import (
 	"net"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
-import "github.com/stretchr/testify/assert"
 
 func TestIpv4AddSuccess(t *testing.T) {
 	trie := NewIpCidrTrie()
@@ -73,6 +74,14 @@ func TestIpv6AddFail(t *testing.T) {
 	assert.IsType(t, new(net.ParseError), err)
 }
 
+func TestIpv6SearchSub(t *testing.T) {
+	trie := NewIpCidrTrie()
+	assert.NoError(t, trie.AddIpCidrForString("240e::/18"))
+
+	assert.Equal(t, true, trie.IsContainForString("240e:964:ea02:100:1800::71"))
+
+}
+
 func TestIpv6Search(t *testing.T) {
 	trie := NewIpCidrTrie()
 
@@ -96,5 +105,11 @@ func TestIpv6Search(t *testing.T) {
 	assert.Equal(t, true, trie.IsContainForString("2001:67c:4e8:9666::1213"))
 
 	assert.Equal(t, false, trie.IsContain(net.ParseIP("22233:22")))
+}
 
+func TestIpv4InIpv6(t *testing.T) {
+	trie := NewIpCidrTrie()
+
+	// Boundary testing
+	assert.NoError(t, trie.AddIpCidrForString("::ffff:198.18.5.138/128"))
 }

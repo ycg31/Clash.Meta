@@ -3,16 +3,19 @@ package outboundgroup
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 
-	"github.com/Dreamacro/clash/adapter/outbound"
-	"github.com/Dreamacro/clash/component/dialer"
-	C "github.com/Dreamacro/clash/constant"
-	"github.com/Dreamacro/clash/constant/provider"
+	"github.com/metacubex/mihomo/adapter/outbound"
+	"github.com/metacubex/mihomo/component/dialer"
+	"github.com/metacubex/mihomo/component/proxydialer"
+	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/constant/provider"
+	"github.com/metacubex/mihomo/log"
 )
 
 type Relay struct {
 	*GroupBase
+	Hidden bool
+	Icon   string
 }
 
 // DialContext implements C.ProxyAdapter
@@ -25,37 +28,16 @@ func (r *Relay) DialContext(ctx context.Context, metadata *C.Metadata, opts ...d
 	case 1:
 		return proxies[0].DialContext(ctx, metadata, r.Base.DialOptions(opts...)...)
 	}
-
-	first := proxies[0]
+	var d C.Dialer
+	d = dialer.NewDialer(r.Base.DialOptions(opts...)...)
+	for _, proxy := range proxies[:len(proxies)-1] {
+		d = proxydialer.New(proxy, d, false)
+	}
 	last := proxies[len(proxies)-1]
-
-	c, err := dialer.DialContext(ctx, "tcp", first.Addr(), r.Base.DialOptions(opts...)...)
+	conn, err := last.DialContextWithDialer(ctx, d, metadata)
 	if err != nil {
-		return nil, fmt.Errorf("%s connect error: %w", first.Addr(), err)
+		return nil, err
 	}
-	tcpKeepAlive(c)
-
-	var currentMeta *C.Metadata
-	for _, proxy := range proxies[1:] {
-		currentMeta, err = addrToMetadata(proxy.Addr())
-		if err != nil {
-			return nil, err
-		}
-
-		c, err = first.StreamConn(c, currentMeta)
-		if err != nil {
-			return nil, fmt.Errorf("%s connect error: %w", first.Addr(), err)
-		}
-
-		first = proxy
-	}
-
-	c, err = last.StreamConn(c, metadata)
-	if err != nil {
-		return nil, fmt.Errorf("%s connect error: %w", last.Addr(), err)
-	}
-
-	conn := outbound.NewConn(c, last)
 
 	for i := len(chainProxies) - 2; i >= 0; i-- {
 		conn.AppendToChains(chainProxies[i])
@@ -77,39 +59,15 @@ func (r *Relay) ListenPacketContext(ctx context.Context, metadata *C.Metadata, o
 		return proxies[0].ListenPacketContext(ctx, metadata, r.Base.DialOptions(opts...)...)
 	}
 
-	first := proxies[0]
+	var d C.Dialer
+	d = dialer.NewDialer(r.Base.DialOptions(opts...)...)
+	for _, proxy := range proxies[:len(proxies)-1] {
+		d = proxydialer.New(proxy, d, false)
+	}
 	last := proxies[len(proxies)-1]
-
-	c, err := dialer.DialContext(ctx, "tcp", first.Addr(), r.Base.DialOptions(opts...)...)
+	pc, err := last.ListenPacketWithDialer(ctx, d, metadata)
 	if err != nil {
-		return nil, fmt.Errorf("%s connect error: %w", first.Addr(), err)
-	}
-	tcpKeepAlive(c)
-
-	var currentMeta *C.Metadata
-	for _, proxy := range proxies[1:] {
-		currentMeta, err = addrToMetadata(proxy.Addr())
-		if err != nil {
-			return nil, err
-		}
-
-		c, err = first.StreamConn(c, currentMeta)
-		if err != nil {
-			return nil, fmt.Errorf("%s connect error: %w", first.Addr(), err)
-		}
-
-		first = proxy
-	}
-
-	c, err = last.StreamConn(c, metadata)
-	if err != nil {
-		return nil, fmt.Errorf("%s connect error: %w", last.Addr(), err)
-	}
-
-	var pc C.PacketConn
-	pc, err = last.ListenPacketOnStreamConn(c, metadata)
-	if err != nil {
-		return nil, fmt.Errorf("%s connect error: %w", first.Addr(), err)
+		return nil, err
 	}
 
 	for i := len(chainProxies) - 2; i >= 0; i-- {
@@ -127,8 +85,22 @@ func (r *Relay) SupportUDP() bool {
 	if len(proxies) == 0 { // C.Direct
 		return true
 	}
-	last := proxies[len(proxies)-1]
-	return last.SupportUDP() && last.SupportUOT()
+	for i := len(proxies) - 1; i >= 0; i-- {
+		proxy := proxies[i]
+		if !proxy.SupportUDP() {
+			return false
+		}
+		if proxy.SupportUOT() {
+			return true
+		}
+		switch proxy.SupportWithDialer() {
+		case C.ALLNet:
+		case C.UDP:
+		default: // C.TCP and C.InvalidNet
+			return false
+		}
+	}
+	return true
 }
 
 // MarshalJSON implements C.ProxyAdapter
@@ -138,8 +110,10 @@ func (r *Relay) MarshalJSON() ([]byte, error) {
 		all = append(all, proxy.Name())
 	}
 	return json.Marshal(map[string]any{
-		"type": r.Type().String(),
-		"all":  all,
+		"type":   r.Type().String(),
+		"all":    all,
+		"hidden": r.Hidden,
+		"icon":   r.Icon,
 	})
 }
 
@@ -171,11 +145,12 @@ func (r *Relay) proxies(metadata *C.Metadata, touch bool) ([]C.Proxy, []C.Proxy)
 }
 
 func (r *Relay) Addr() string {
-	proxies, _ := r.proxies(nil, true)
+	proxies, _ := r.proxies(nil, false)
 	return proxies[len(proxies)-1].Addr()
 }
 
 func NewRelay(option *GroupCommonOption, providers []provider.ProxyProvider) *Relay {
+	log.Warnln("The group [%s] with relay type is deprecated, please using dialer-proxy instead", option.Name)
 	return &Relay{
 		GroupBase: NewGroupBase(GroupBaseOption{
 			outbound.BaseOption{
@@ -185,7 +160,13 @@ func NewRelay(option *GroupCommonOption, providers []provider.ProxyProvider) *Re
 				RoutingMark: option.RoutingMark,
 			},
 			"",
+			"",
+			"",
+			5000,
+			5,
 			providers,
 		}),
+		Hidden: option.Hidden,
+		Icon:   option.Icon,
 	}
 }

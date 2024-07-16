@@ -3,13 +3,14 @@
 package tproxy
 
 import (
-	"encoding/binary"
-	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"strconv"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -19,7 +20,7 @@ const (
 
 // dialUDP acts like net.DialUDP for transparent proxy.
 // It binds to a non-local address(`lAddr`).
-func dialUDP(network string, lAddr *net.UDPAddr, rAddr *net.UDPAddr) (*net.UDPConn, error) {
+func dialUDP(network string, lAddr, rAddr netip.AddrPort) (uc *net.UDPConn, err error) {
 	rSockAddr, err := udpAddrToSockAddr(rAddr)
 	if err != nil {
 		return nil, err
@@ -35,23 +36,25 @@ func dialUDP(network string, lAddr *net.UDPAddr, rAddr *net.UDPAddr) (*net.UDPCo
 		return nil, err
 	}
 
+	defer func() {
+		if err != nil {
+			syscall.Close(fd)
+		}
+	}()
+
 	if err = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
-		syscall.Close(fd)
 		return nil, err
 	}
 
 	if err = syscall.SetsockoptInt(fd, syscall.SOL_IP, syscall.IP_TRANSPARENT, 1); err != nil {
-		syscall.Close(fd)
 		return nil, err
 	}
 
 	if err = syscall.Bind(fd, lSockAddr); err != nil {
-		syscall.Close(fd)
 		return nil, err
 	}
 
 	if err = syscall.Connect(fd, rSockAddr); err != nil {
-		syscall.Close(fd)
 		return nil, err
 	}
 
@@ -60,35 +63,26 @@ func dialUDP(network string, lAddr *net.UDPAddr, rAddr *net.UDPAddr) (*net.UDPCo
 
 	c, err := net.FileConn(fdFile)
 	if err != nil {
-		syscall.Close(fd)
 		return nil, err
 	}
 
 	return c.(*net.UDPConn), nil
 }
 
-func udpAddrToSockAddr(addr *net.UDPAddr) (syscall.Sockaddr, error) {
-	switch {
-	case addr.IP.To4() != nil:
-		ip := [4]byte{}
-		copy(ip[:], addr.IP.To4())
-
-		return &syscall.SockaddrInet4{Addr: ip, Port: addr.Port}, nil
-
-	default:
-		ip := [16]byte{}
-		copy(ip[:], addr.IP.To16())
-
-		zoneID, err := strconv.ParseUint(addr.Zone, 10, 32)
-		if err != nil {
-			zoneID = 0
-		}
-
-		return &syscall.SockaddrInet6{Addr: ip, Port: addr.Port, ZoneId: uint32(zoneID)}, nil
+func udpAddrToSockAddr(addr netip.AddrPort) (syscall.Sockaddr, error) {
+	if addr.Addr().Is4() {
+		return &syscall.SockaddrInet4{Addr: addr.Addr().As4(), Port: int(addr.Port())}, nil
 	}
+
+	zoneID, err := strconv.ParseUint(addr.Addr().Zone(), 10, 32)
+	if err != nil {
+		zoneID = 0
+	}
+
+	return &syscall.SockaddrInet6{Addr: addr.Addr().As16(), Port: int(addr.Port()), ZoneId: uint32(zoneID)}, nil
 }
 
-func udpAddrFamily(net string, lAddr, rAddr *net.UDPAddr) int {
+func udpAddrFamily(net string, lAddr, rAddr netip.AddrPort) int {
 	switch net[len(net)-1] {
 	case '4':
 		return syscall.AF_INET
@@ -96,29 +90,76 @@ func udpAddrFamily(net string, lAddr, rAddr *net.UDPAddr) int {
 		return syscall.AF_INET6
 	}
 
-	if (lAddr == nil || lAddr.IP.To4() != nil) && (rAddr == nil || lAddr.IP.To4() != nil) {
+	if lAddr.Addr().Is4() && rAddr.Addr().Is4() {
 		return syscall.AF_INET
 	}
 	return syscall.AF_INET6
 }
 
-func getOrigDst(oob []byte, oobn int) (*net.UDPAddr, error) {
-	msgs, err := syscall.ParseSocketControlMessage(oob[:oobn])
+func getOrigDst(oob []byte) (netip.AddrPort, error) {
+	// oob contains socket control messages which we need to parse.
+	scms, err := unix.ParseSocketControlMessage(oob)
 	if err != nil {
-		return nil, err
+		return netip.AddrPort{}, fmt.Errorf("parse control message: %w", err)
 	}
 
-	for _, msg := range msgs {
-		if msg.Header.Level == syscall.SOL_IP && msg.Header.Type == syscall.IP_RECVORIGDSTADDR {
-			ip := net.IP(msg.Data[4:8])
-			port := binary.BigEndian.Uint16(msg.Data[2:4])
-			return &net.UDPAddr{IP: ip, Port: int(port)}, nil
-		} else if msg.Header.Level == syscall.SOL_IPV6 && msg.Header.Type == IPV6_RECVORIGDSTADDR {
-			ip := net.IP(msg.Data[8:24])
-			port := binary.BigEndian.Uint16(msg.Data[2:4])
-			return &net.UDPAddr{IP: ip, Port: int(port)}, nil
+	// retrieve the destination address from the SCM.
+	var sa unix.Sockaddr
+	for i := range scms {
+		sa, err = unix.ParseOrigDstAddr(&scms[i])
+		if err == nil {
+			break
 		}
 	}
 
-	return nil, errors.New("cannot find origDst")
+	if err != nil {
+		return netip.AddrPort{}, fmt.Errorf("retrieve destination: %w", err)
+	}
+
+	// encode the destination address into a cmsg.
+	var rAddr netip.AddrPort
+	switch v := sa.(type) {
+	case *unix.SockaddrInet4:
+		rAddr = netip.AddrPortFrom(netip.AddrFrom4(v.Addr), uint16(v.Port))
+	case *unix.SockaddrInet6:
+		rAddr = netip.AddrPortFrom(netip.AddrFrom16(v.Addr), uint16(v.Port))
+	default:
+		return netip.AddrPort{}, fmt.Errorf("unsupported address type: %T", v)
+	}
+
+	return rAddr, nil
+}
+
+func getDSCP(oob []byte) (uint8, error) {
+	scms, err := unix.ParseSocketControlMessage(oob)
+	if err != nil {
+		return 0, fmt.Errorf("parse control message: %w", err)
+	}
+	var dscp uint8
+	for i := range scms {
+		dscp, err = parseDSCP(&scms[i])
+		if err == nil {
+			break
+		}
+	}
+
+	if err != nil {
+		return 0, fmt.Errorf("retrieve DSCP: %w", err)
+	}
+	return dscp, nil
+}
+
+func parseDSCP(m *unix.SocketControlMessage) (uint8, error) {
+	switch {
+	case m.Header.Level == unix.SOL_IP && m.Header.Type == unix.IP_TOS:
+		dscp := uint8(m.Data[0] >> 2)
+		return dscp, nil
+
+	case m.Header.Level == unix.SOL_IPV6 && m.Header.Type == unix.IPV6_TCLASS:
+		dscp := uint8(m.Data[0] >> 2)
+		return dscp, nil
+
+	default:
+		return 0, nil
+	}
 }

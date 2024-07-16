@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/Dreamacro/clash/common/nnip"
-	"github.com/Dreamacro/clash/log"
+	"github.com/metacubex/mihomo/common/nnip"
+	"github.com/metacubex/mihomo/log"
 )
 
 // store process name for when dealing with multiple PROCESS-NAME rules
@@ -21,11 +21,7 @@ var (
 	once sync.Once
 )
 
-func resolveSocketByNetlink(network string, ip netip.Addr, srcPort int) (int32, int32, error) {
-	return 0, 0, ErrPlatformNotSupport
-}
-
-func findProcessName(network string, ip netip.Addr, srcPort int) (int32, string, error) {
+func findProcessName(network string, ip netip.Addr, srcPort int) (uint32, string, error) {
 	once.Do(func() {
 		if err := initSearcher(); err != nil {
 			log.Errorln("Initialize PROCESS-NAME failed: %s", err.Error())
@@ -35,7 +31,7 @@ func findProcessName(network string, ip netip.Addr, srcPort int) (int32, string,
 	})
 
 	if defaultSearcher == nil {
-		return -1, "", ErrPlatformNotSupport
+		return 0, "", ErrPlatformNotSupport
 	}
 
 	var spath string
@@ -46,22 +42,22 @@ func findProcessName(network string, ip netip.Addr, srcPort int) (int32, string,
 	case UDP:
 		spath = "net.inet.udp.pcblist"
 	default:
-		return -1, "", ErrInvalidNetwork
+		return 0, "", ErrInvalidNetwork
 	}
 
 	value, err := syscall.Sysctl(spath)
 	if err != nil {
-		return -1, "", err
+		return 0, "", err
 	}
 
 	buf := []byte(value)
 	pid, err := defaultSearcher.Search(buf, ip, uint16(srcPort), isTCP)
 	if err != nil {
-		return -1, "", err
+		return 0, "", err
 	}
 
 	pp, err := getExecPathFromPID(pid)
-	return -1, pp, err
+	return 0, pp, err
 }
 
 func getExecPathFromPID(pid uint32) (string, error) {

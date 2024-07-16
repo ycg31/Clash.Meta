@@ -9,13 +9,13 @@ import (
 var StackTypeMapping = map[string]TUNStack{
 	strings.ToLower(TunGvisor.String()): TunGvisor,
 	strings.ToLower(TunSystem.String()): TunSystem,
-	strings.ToLower(TunLWIP.String()):   TunLWIP,
+	strings.ToLower(TunMixed.String()):  TunMixed,
 }
 
 const (
 	TunGvisor TUNStack = iota
 	TunSystem
-	TunLWIP
+	TunMixed
 )
 
 type TUNStack int
@@ -62,8 +62,8 @@ func (e TUNStack) String() string {
 		return "gVisor"
 	case TunSystem:
 		return "System"
-	case TunLWIP:
-		return "LWIP"
+	case TunMixed:
+		return "Mixed"
 	default:
 		return "unknown"
 	}

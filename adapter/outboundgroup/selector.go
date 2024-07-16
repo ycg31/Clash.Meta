@@ -5,16 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/Dreamacro/clash/adapter/outbound"
-	"github.com/Dreamacro/clash/component/dialer"
-	C "github.com/Dreamacro/clash/constant"
-	"github.com/Dreamacro/clash/constant/provider"
+	"github.com/metacubex/mihomo/adapter/outbound"
+	"github.com/metacubex/mihomo/component/dialer"
+	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/constant/provider"
 )
 
 type Selector struct {
 	*GroupBase
 	disableUDP bool
 	selected   string
+	Hidden     bool
+	Icon       string
 }
 
 // DialContext implements C.ProxyAdapter
@@ -44,6 +46,11 @@ func (s *Selector) SupportUDP() bool {
 	return s.selectedProxy(false).SupportUDP()
 }
 
+// IsL3Protocol implements C.ProxyAdapter
+func (s *Selector) IsL3Protocol(metadata *C.Metadata) bool {
+	return s.selectedProxy(false).IsL3Protocol(metadata)
+}
+
 // MarshalJSON implements C.ProxyAdapter
 func (s *Selector) MarshalJSON() ([]byte, error) {
 	all := []string{}
@@ -52,9 +59,11 @@ func (s *Selector) MarshalJSON() ([]byte, error) {
 	}
 
 	return json.Marshal(map[string]any{
-		"type": s.Type().String(),
-		"now":  s.Now(),
-		"all":  all,
+		"type":   s.Type().String(),
+		"now":    s.Now(),
+		"all":    all,
+		"hidden": s.Hidden,
+		"icon":   s.Icon,
 	})
 }
 
@@ -71,6 +80,10 @@ func (s *Selector) Set(name string) error {
 	}
 
 	return errors.New("proxy not exist")
+}
+
+func (s *Selector) ForceSet(name string) {
+	s.selected = name
 }
 
 // Unwrap implements C.ProxyAdapter
@@ -99,9 +112,15 @@ func NewSelector(option *GroupCommonOption, providers []provider.ProxyProvider) 
 				RoutingMark: option.RoutingMark,
 			},
 			option.Filter,
+			option.ExcludeFilter,
+			option.ExcludeType,
+			option.TestTimeout,
+			option.MaxFailedTimes,
 			providers,
 		}),
 		selected:   "COMPATIBLE",
 		disableUDP: option.DisableUDP,
+		Hidden:     option.Hidden,
+		Icon:       option.Icon,
 	}
 }

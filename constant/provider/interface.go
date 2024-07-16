@@ -1,7 +1,8 @@
 package provider
 
 import (
-	C "github.com/Dreamacro/clash/constant"
+	"github.com/metacubex/mihomo/common/utils"
+	"github.com/metacubex/mihomo/constant"
 )
 
 // Vehicle Type
@@ -30,6 +31,7 @@ func (v VehicleType) String() string {
 type Vehicle interface {
 	Read() ([]byte, error)
 	Path() string
+	Proxy() string
 	Type() VehicleType
 }
 
@@ -65,23 +67,37 @@ type Provider interface {
 // ProxyProvider interface
 type ProxyProvider interface {
 	Provider
-	Proxies() []C.Proxy
+	Proxies() []constant.Proxy
+	// Touch is used to inform the provider that the proxy is actually being used while getting the list of proxies.
+	// Commonly used in DialContext and DialPacketConn
 	Touch()
 	HealthCheck()
 	Version() uint32
+	RegisterHealthCheckTask(url string, expectedStatus utils.IntRanges[uint16], filter string, interval uint)
+	HealthCheckURL() string
 }
 
-// Rule Type
+// RuleProvider interface
+type RuleProvider interface {
+	Provider
+	Behavior() RuleBehavior
+	Match(*constant.Metadata) bool
+	ShouldResolveIP() bool
+	ShouldFindProcess() bool
+	Strategy() any
+}
+
+// Rule Behavior
 const (
-	Domain RuleType = iota
+	Domain RuleBehavior = iota
 	IPCIDR
 	Classical
 )
 
-// RuleType defined
-type RuleType int
+// RuleBehavior defined
+type RuleBehavior int
 
-func (rt RuleType) String() string {
+func (rt RuleBehavior) String() string {
 	switch rt {
 	case Domain:
 		return "Domain"
@@ -94,11 +110,26 @@ func (rt RuleType) String() string {
 	}
 }
 
-// RuleProvider interface
-type RuleProvider interface {
-	Provider
-	Behavior() RuleType
-	Match(*C.Metadata) bool
-	ShouldResolveIP() bool
-	AsRule(adaptor string) C.Rule
+const (
+	YamlRule RuleFormat = iota
+	TextRule
+)
+
+type RuleFormat int
+
+func (rf RuleFormat) String() string {
+	switch rf {
+	case YamlRule:
+		return "YamlRule"
+	case TextRule:
+		return "TextRule"
+	default:
+		return "Unknown"
+	}
+}
+
+type Tunnel interface {
+	Providers() map[string]ProxyProvider
+	RuleProviders() map[string]RuleProvider
+	RuleUpdateCallback() *utils.Callback[RuleProvider]
 }

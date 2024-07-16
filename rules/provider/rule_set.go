@@ -1,21 +1,26 @@
 package provider
 
 import (
-	"fmt"
-	C "github.com/Dreamacro/clash/constant"
-	P "github.com/Dreamacro/clash/constant/provider"
-	"github.com/Dreamacro/clash/rules/common"
+	C "github.com/metacubex/mihomo/constant"
+	P "github.com/metacubex/mihomo/constant/provider"
+	"github.com/metacubex/mihomo/rules/common"
 )
 
 type RuleSet struct {
 	*common.Base
-	ruleProviderName string
-	adapter          string
-	ruleProvider     P.RuleProvider
-	noResolveIP      bool
+	ruleProviderName  string
+	adapter           string
+	noResolveIP       bool
+	shouldFindProcess bool
 }
 
 func (rs *RuleSet) ShouldFindProcess() bool {
+	if rs.shouldFindProcess {
+		return true
+	}
+	if provider, ok := rs.getProvider(); ok {
+		return provider.ShouldFindProcess()
+	}
 	return false
 }
 
@@ -24,7 +29,10 @@ func (rs *RuleSet) RuleType() C.RuleType {
 }
 
 func (rs *RuleSet) Match(metadata *C.Metadata) (bool, string) {
-	return rs.getProviders().Match(metadata), rs.adapter
+	if provider, ok := rs.getProvider(); ok {
+		return provider.Match(metadata), rs.adapter
+	}
+	return false, ""
 }
 
 func (rs *RuleSet) Adapter() string {
@@ -32,31 +40,37 @@ func (rs *RuleSet) Adapter() string {
 }
 
 func (rs *RuleSet) Payload() string {
-	return rs.getProviders().Name()
+	if provider, ok := rs.getProvider(); ok {
+		return provider.Name()
+	}
+	return ""
 }
 
 func (rs *RuleSet) ShouldResolveIP() bool {
-	return !rs.noResolveIP && rs.getProviders().ShouldResolveIP()
-}
-func (rs *RuleSet) getProviders() P.RuleProvider {
-	if rs.ruleProvider == nil {
-		rp := RuleProviders()[rs.ruleProviderName]
-		rs.ruleProvider = rp
+	if rs.noResolveIP {
+		return false
 	}
+	if provider, ok := rs.getProvider(); ok {
+		return provider.ShouldResolveIP()
+	}
+	return false
+}
 
-	return rs.ruleProvider
+func (rs *RuleSet) ProviderNames() []string {
+	return []string{rs.ruleProviderName}
+}
+
+func (rs *RuleSet) getProvider() (P.RuleProvider, bool) {
+	pp, ok := tunnel.RuleProviders()[rs.ruleProviderName]
+	return pp, ok
 }
 
 func NewRuleSet(ruleProviderName string, adapter string, noResolveIP bool) (*RuleSet, error) {
-	rp, ok := RuleProviders()[ruleProviderName]
-	if !ok {
-		return nil, fmt.Errorf("rule set %s not found", ruleProviderName)
-	}
-	return &RuleSet{
+	rs := &RuleSet{
 		Base:             &common.Base{},
 		ruleProviderName: ruleProviderName,
 		adapter:          adapter,
-		ruleProvider:     rp,
 		noResolveIP:      noResolveIP,
-	}, nil
+	}
+	return rs, nil
 }

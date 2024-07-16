@@ -3,16 +3,17 @@ package sing_tun
 import (
 	"time"
 
-	"github.com/Dreamacro/clash/log"
+	"github.com/metacubex/mihomo/constant/features"
+	"github.com/metacubex/mihomo/log"
 
-	tun "github.com/sagernet/sing-tun"
+	tun "github.com/metacubex/sing-tun"
 )
 
-func tunOpen(options tun.Options) (tunIf tun.Tun, err error) {
+func tunNew(options tun.Options) (tunIf tun.Tun, err error) {
 	maxRetry := 3
 	for i := 0; i < maxRetry; i++ {
 		timeBegin := time.Now()
-		tunIf, err = tun.Open(options)
+		tunIf, err = tun.New(options)
 		if err == nil {
 			return
 		}
@@ -27,4 +28,9 @@ func tunOpen(options tun.Options) (tunIf tun.Tun, err error) {
 
 func init() {
 	tun.TunnelType = InterfaceName
+
+	if features.WindowsMajorVersion < 10 {
+		// to resolve "bind: The requested address is not valid in its context"
+		EnforceBindInterface = true
+	}
 }
